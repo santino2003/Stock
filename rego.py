@@ -1,26 +1,28 @@
 import shutil
 import barcode
-from datetime import date
-from datetime import datetime
 from barcode.writer import ImageWriter
 from PIL import Image
-import io
 import tempfile
-import subprocess
+import os
+import csv
+from datetime import datetime, timedelta,date
 from PIL import ImageWin
 import csv
+import threading
+from google.cloud.firestore_v1.field_path import FieldPath
 
 
 
-# import barcode
-import os
-# from barcode.writer import ImageWriter
+
+
+
+STOCK_HISTORICO = os.path.abspath("stock_historico.csv")
 
 import firebase_admin
 from firebase_admin import credentials, firestore
 
 # Configura la ruta a tu archivo de clave de servicio
-cred = credentials.Certificate("regomax-aeaed-firebase-adminsdk-eeush-a0ab89b721.json")
+cred = credentials.Certificate("regomaxultimo-firebase-adminsdk-wejo4-f535e92b5c.json")
 
 # Inicializa la app de Firebase con la clave de servicio
 firebase_admin.initialize_app(cred)
@@ -30,24 +32,9 @@ db = firestore.client()
 
 stock_ref = db.collection('stock')
 entregados_ref = db.collection('entregados')
-historico_ref = db.collection('historico')
+ultimas_24h_ref = db.collection('ultimas_24h')
 
 
-ULTIMA_FECHA = -1
-CODIGO = 0
-FECHA = 1
-LOTE = 1
-INDICE = 7
-ARCHIVO =  os.path.abspath("stock.csv")
-FECHAS = os.path.abspath("fechas.csv")
-ENTREGADO = os.path.abspath("entregado.csv")
-STOCK_HISTORICO = os.path.abspath("stock_historico.csv")
-codigos = {}
-dic_producto = {}
-lista_prod = []
-codigos_hist = {}
-dic_producto_hist = {}
-lista_prod_hist = []
 
 
 def obtener_hora():
@@ -70,30 +57,33 @@ def obtener_fecha():
 
     return dia_formateado, fecha_larga
 
-
-
-               
 def genBARcode(codigo):
-    # Generar el código de barras como objeto PIL Image
-    BARCODE = barcode.get_barcode_class('code128')
-    codigo_bar = BARCODE(codigo, writer=ImageWriter())
-    buffer = io.BytesIO()
-    codigo_bar.write(buffer)
-    
-    # Cargar la imagen desde el buffer en memoria
-    buffer.seek(0)
-    image = Image.open(buffer)
-    
-    # Guardar la imagen en un archivo temporal
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-    image.save(temp_file.name)
+    # Crear un archivo temporal que se eliminará automáticamente
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        try:
+            # Generar el código de barras
+            BARCODE = barcode.get_barcode_class('code128')
+            codigo_bar = BARCODE(codigo, writer=ImageWriter())
+            
+            # Guardar el archivo en la carpeta temporal
+            nombre_fichero = codigo_bar.save(temp_file.name)
+            
+            # Reemplazar las barras invertidas por barras dobles
+            nombre_fichero = nombre_fichero.replace("\\", "//")
+            
+            print(nombre_fichero)
+            # Imprimir el archivo
+            os.startfile(nombre_fichero, "print")
+            
+            # Función para eliminar el archivo después de 15 segundos
+            def eliminar_archivo(nombre_fichero):
+                threading.Timer(60, os.remove, [nombre_fichero]).start()
+            
+            # Ejecutar la función de eliminación en paralelo
+            eliminar_archivo(nombre_fichero)
+        except Exception as e:
+            print(f"Error al generar el código de barras: {e}")
 
-    temp_file.close()  # Importante cerrar el archivo para que esté disponible para otros procesos
-    
-  
-    
-    # subprocess.run(['notepad', temp_file.name], check=True)
-    subprocess.run(['start', temp_file.name], shell=True, check=True)
 
 
 def cargar_producto(producto,peso,ubicacion):   
@@ -103,36 +93,41 @@ def cargar_producto(producto,peso,ubicacion):
     lote = cod_barra[10:12]
    
     agregar_archivo(cod_barra,fecha,hora,lote,producto,peso,ubicacion)
-    agregar_hist(cod_barra,fecha,hora,lote,producto,peso,ubicacion)
+    hist_escritorio(cod_barra,fecha,hora,lote,producto,peso,ubicacion)
     genBARcode(cod_barra)
-    # # os.startfile(nombre_fichero, "print")
     
-    
+def hist_escritorio(codigo,fecha,hora,lote,producto,peso,ubicacion): 
+    with open(STOCK_HISTORICO, "a") as f:
+        f.write(codigo +","+fecha +","+ hora +","+ lote +","+ producto +","+ peso +","+ubicacion+'\n')
+    copiar(STOCK_HISTORICO)
+def copiar(archivo):
+    user_profile = os.environ['USERPROFILE']
+    posibles_rutas = [
+        os.path.join(user_profile, 'OneDrive', 'Desktop'),
+        os.path.join(user_profile, 'OneDrive', 'Escritorio'),
+        os.path.join(user_profile, 'Desktop'),
+        os.path.join(user_profile, 'Escritorio')
+    ]
 
+    # Encontrar la ruta válida
+    escritorio = None
+    for ruta in posibles_rutas:
+        if os.path.exists(ruta):
+            escritorio = ruta
+            break
+    shutil.copy(archivo,escritorio)
     
-def agregar_archivo(codigo,fecha,hora,lote,producto,peso,ubicacion):
-    stock_doc_ref = stock_ref.document()
+def agregar_archivo(codigo, fecha, hora, numero, producto, peso, ubicacion):
+    stock_doc_ref = db.collection('stock').document(codigo)
     stock_doc_ref.set({
-    'codigo': codigo,
-    'fecha': fecha,
-    'hora': hora,
-    'lote': lote,
-    'producto': producto,
-    'peso': peso,
-    'ubicacion': ubicacion
+        'codigo': codigo,
+        'fecha': fecha,
+        'hora': hora,
+        'numero': numero,
+        'producto': producto,
+        'peso-Kg': peso,
+        'ubicacion/Precinto': ubicacion
     })
-def agregar_hist(codigo,fecha,hora,lote,producto,peso,ubicacion):
-    historico_doc_ref = historico_ref.document()
-    historico_doc_ref.set({
-    'codigo': codigo,
-    'fecha': fecha,
-    'hora': hora,
-    'lote': lote,
-    'producto': producto,
-    'peso': peso,
-    'ubicacion': ubicacion
-    })
-
 
 
 def buscar_producto(cod_prod):     
@@ -144,30 +139,73 @@ def buscar_producto(cod_prod):
     # Si no se encuentra el producto, retornar None
     return None
 
-def entregar_producto(cod_prod):
+def entregar_producto(cod_prod,cliente):
     producto = buscar_producto(cod_prod)
-
-    print(cod_prod)
     if producto:
         entregados_ref_doc = entregados_ref.document()
         entregados_ref_doc.set({
             'codigo': producto['codigo'],
             'fecha': producto['fecha'],
             'hora': producto['hora'],
-            'numero': producto['lote'],
+            'numero': producto['numero'],
             'producto': producto['producto'],
-            'peso': producto['peso'],
+            'peso': producto['peso-Kg'],
             'fecha_entrega': obtener_fecha()[0],
-            'hora_entrega':  obtener_hora()[0]
+            'hora_entrega':  obtener_hora()[0],
+            'cliente': cliente
         })
         producto_ref = stock_ref.where('codigo', '==', cod_prod).stream()
+        entregar_ultmas_24h(producto,cliente)
         for prod in producto_ref:
             prod.reference.delete()
         return True
     else:
         return False
+    
+def obtener_fecha_actual():
+    return datetime.utcnow().strftime('%Y-%m-%d')
 
+def verificar_y_eliminar_coleccion_si_cambia_dia(coleccion_ref, fecha_actual):
+    # Obtener el documento que almacena la última fecha de actualización
+    fecha_doc_ref = db.collection('metadata').document('ultima_fecha')
+    fecha_doc = fecha_doc_ref.get()
 
+    if fecha_doc.exists:
+        ultima_fecha = fecha_doc.to_dict().get('fecha')
+        if ultima_fecha != fecha_actual:
+            # Eliminar la colección si la fecha ha cambiado
+            borrar_coleccion(coleccion_ref)
+            # Actualizar la última fecha de actualización
+            fecha_doc_ref.set({'fecha': fecha_actual})
+    else:
+        # Si el documento no existe, crearlo con la fecha actual
+        fecha_doc_ref.set({'fecha': fecha_actual})
+
+def entregar_ultmas_24h(producto, cliente):
+    # Obtener la fecha actual
+    fecha_actual = obtener_fecha_actual()
+
+    # Referencia a la colección de las últimas 24 horas
+    ultimas_24h_ref = db.collection('ultimas_24h')
+
+    # Verificar si la fecha ha cambiado y eliminar la colección si es necesario
+    verificar_y_eliminar_coleccion_si_cambia_dia(ultimas_24h_ref, fecha_actual)
+
+    # Agregar el nuevo documento a la colección
+    ultimas_24h_doc_ref = ultimas_24h_ref.document(producto['codigo'])
+    ultimas_24h_doc_ref.set({
+        'codigo': producto['codigo'],
+        'fecha': producto['fecha'],
+        'hora': producto['hora'],
+        'numero': producto['numero'],
+        'producto': producto['producto'],
+        'peso': producto['peso-Kg'],
+        'fecha_entrega': obtener_fecha()[0],
+        'hora_entrega': obtener_hora()[0],
+        'cliente': cliente
+    })
+
+    
 
 
 def borrar_coleccion(coleccion_ref, batch_size=500):
@@ -196,19 +234,31 @@ def numer_codigo_barras():
         
 
 
-def modificar_archivos(cod_prod,posicion_a_mod,dato_modificado):
-    producto_ref = stock_ref.where('codigo', '==', cod_prod).stream()
-    producto_ref_hist = historico_ref.where('codigo', '==', cod_prod).stream()
-    print(posicion_a_mod)
-    print(dato_modificado)
-    for prod in producto_ref_hist:
-        prod.reference.update({posicion_a_mod: dato_modificado})
-    for prod in producto_ref:
-        prod.reference.update({posicion_a_mod: dato_modificado})
-    return True
-
-
+def modificar_archivos(cod_prod, nuevos_datos):
+    # Obtener la referencia del documento que coincide con el código del producto
+    producto_ref = stock_ref.where('codigo', '==', cod_prod).limit(1).stream()
     
+    # Convertir el stream a una lista para obtener el primer (y único) documento
+    producto_list = list(producto_ref)
+    
+    if not producto_list:
+        print(f"No se encontró el producto con código: {cod_prod}")
+        return False
+    
+    # Obtener la referencia del primer documento
+    prod = producto_list[0]
+    
+    # Obtener los datos actuales del documento
+    datos_actuales = prod.to_dict()
+    
+    # Modificar los campos necesarios
+    for key, value in nuevos_datos.items():
+        datos_actuales[key] = value
+    
+    # Sobrescribir todo el documento con los datos actualizados
+    prod.reference.set(datos_actuales)
+    
+    return True
 
 
 
@@ -220,9 +270,9 @@ def reimp_cod(cod):
     else:
         False
 
-import csv
 
-def descargar_datos_a_csv(nombre_coleccion, nombre_archivo_csv):
+
+def descargar_datos_a_csv(nombre_coleccion, nombre_archivo_csv, campo_fecha):
     # Obtener todos los documentos de la colección
     coleccion_ref = db.collection(nombre_coleccion)
     documentos = coleccion_ref.stream()
@@ -234,6 +284,13 @@ def descargar_datos_a_csv(nombre_coleccion, nombre_archivo_csv):
     for doc in documentos:
         datos.append(doc.to_dict())
 
+    # Convertir las fechas de cadena a objetos datetime y ordenar los datos
+    try:
+        datos.sort(key=lambda x: datetime.strptime(x.get(campo_fecha), '%y/%m/%d'), reverse=True)
+    except ValueError as e:
+        print(f"Error al convertir las fechas: {e}")
+        return
+
     # Obtener los nombres de los campos (keys) del primer documento
     if datos:
         campos = datos[0].keys()
@@ -241,18 +298,39 @@ def descargar_datos_a_csv(nombre_coleccion, nombre_archivo_csv):
         print("No se encontraron documentos en la colección.")
         return
 
+    # Construir la ruta completa al escritorio del usuario
+    user_profile = os.environ['USERPROFILE']
+    posibles_rutas = [
+        os.path.join(user_profile, 'OneDrive', 'Desktop'),
+        os.path.join(user_profile, 'OneDrive', 'Escritorio'),
+        os.path.join(user_profile, 'Desktop'),
+        os.path.join(user_profile, 'Escritorio')
+    ]
+
+    # Encontrar la ruta válida
+    escritorio = None
+    for ruta in posibles_rutas:
+        if os.path.exists(ruta):
+            escritorio = ruta
+            break
+
+    if escritorio is None:
+        print("No se encontró la ruta al escritorio.")
+        return
+
+    ruta_archivo_csv = os.path.join(escritorio, nombre_archivo_csv)
+
     # Escribir los datos en un archivo CSV
     try:
-        with open(nombre_archivo_csv, mode='w', newline='', encoding='utf-8') as archivo_csv:
+        with open(ruta_archivo_csv, mode='w', newline='', encoding='utf-8') as archivo_csv:
             escritor_csv = csv.DictWriter(archivo_csv, fieldnames=campos)
             escritor_csv.writeheader()
             escritor_csv.writerows(datos)
-        print(f"Datos exportados exitosamente a {nombre_archivo_csv}")
+        print(f"Datos exportados exitosamente a {ruta_archivo_csv}")
     except ValueError as e:
         print(f"Error al escribir en el archivo CSV: {e}")
     except Exception as e:
         print(f"Se produjo un error inesperado: {e}")
-
         
 def cargar_desplegables(arch_ubi,arch_pro,ubi,prod):
     with open(arch_ubi, "r") as f:
